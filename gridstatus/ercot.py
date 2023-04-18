@@ -4,6 +4,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 import requests
+from pandas.api.types import is_datetime64_any_dtype as is_datetime
 
 from gridstatus import utils
 from gridstatus.base import (
@@ -201,42 +202,54 @@ class Ercot(ISOBase):
         else:
             raise NotSupported()
 
-    @support_date_range("1D")
-    def get_load(self, date, verbose=False):
+    @support_date_range("1Y", update_dates=ercot_update_dates)
+    def get_load(self, date, end=None, verbose=False):
         if date == "latest":
             today_load = self.get_load("today", verbose=verbose)
             latest = today_load.iloc[-1]
             return {"load": latest["Load"], "time": latest["Time"]}
-
         elif utils.is_today(date, tz=self.default_timezone):
             df = self._get_todays_outlook_non_forecast(date, verbose=verbose)
             df = df.rename(columns={"demand": "Load"})
-            return df[["Time", "Interval Start", "Interval End", "Load"]]
-
         elif utils.is_within_last_days(
-            date,
-            self.LOAD_HISTORICAL_MAX_DAYS,
+            date=date,
+            days=self.LOAD_HISTORICAL_MAX_DAYS,
             tz=self.default_timezone,
         ):
-            df = self._get_load_html(date, verbose)
-            return df[["Time", "Interval Start", "Interval End", "Load"]]
-
+            df = self._get_load_html(date, end=end, verbose=verbose)
+        elif 2002 <= date.year <= 2022:
+            df = self._get_historical_load(date, end=end, verbose=verbose)
         else:
+            # date.year < 2002:
             raise NotSupported()
-
-    def _get_load_html(self, when, verbose=False):
-        """Returns load for currentDay or previousDay"""
-        url = self.ACTUAL_LOADS_URL_FORMAT.format(
-            timestamp=when.strftime("%Y%m%d"),
-        )
-
-        msg = f"Fetching {url}"
-        log(msg, verbose)
-
-        dfs = pd.read_html(url, header=0)
-        df = dfs[0]
-        df = self._handle_html_data(df, {"TOTAL": "Load"})
+        if end:
+            df = utils.get_data_between_dates(df, date, end)
+        else:
+            df = df[df["Time"].dt.date == date.date()]
+        df = df[["Time", "Interval Start", "Interval End", "Load"]]
+        if df.empty:
+            raise ValueError(
+                f"No historical load data for {date} in {self.name} ({self.zone_key})",  # noqa: E501
+            )
         return df
+
+    def _get_load_html(self, start, end=None, verbose=False):
+        """Returns load for currentDay or previousDay"""
+        final_dfs = []
+        if end is None:
+            end = start + pd.Timedelta(days=1)
+        for i in range((end - start).days + 1):
+            day = start + pd.Timedelta(days=i)
+            url = self.ACTUAL_LOADS_URL_FORMAT.format(
+                timestamp=day.strftime("%Y%m%d"),
+            )
+            msg = f"Fetching {url}"
+            log(msg, verbose)
+            dfs = pd.read_html(url, header=0)
+            df = dfs[0]
+            df = self._handle_html_data(df, {"TOTAL": "Load"})
+            final_dfs.append(df)
+        return pd.concat(final_dfs)
 
     def _get_todays_outlook_non_forecast(self, date, verbose=False):
         """Returns most recent data point for supply in MW
@@ -295,6 +308,19 @@ class Ercot(ISOBase):
         data = data[data["forecast"] == 0]  # only keep non forecast rows
 
         return data.reset_index(drop=True)
+
+    def _get_historical_load(self, date, end=None, verbose=False):
+        """Returns load for a given date
+
+        Only supports 2002-2022
+        """
+        if not 2002 <= date.year <= 2022:
+            raise NotSupported()
+
+        year_to_document = self._get_historical_document(date, verbose=verbose)
+        doc_info = year_to_document[date.year]
+        df = self.read_doc(doc_info, verbose=verbose)
+        return df
 
     def get_load_forecast(self, date, verbose=False):
         """Returns load forecast
@@ -750,9 +776,6 @@ class Ercot(ISOBase):
             .drop_duplicates(subset=["Interval Start"])
             .reset_index(drop=True)
         )
-
-        print(data)
-
         return data
 
     @support_date_range("1D")
@@ -788,12 +811,10 @@ class Ercot(ISOBase):
         log(msg, verbose)
 
         doc = self.read_doc(doc_info, verbose=verbose)
-
         data = self._finalize_as_price_df(
             doc,
             pivot=True,
         )
-
         return data
 
     def _finalize_as_price_df(self, doc, pivot=False):
@@ -834,6 +855,125 @@ class Ercot(ISOBase):
         doc.rename(columns=rename, inplace=True)
 
         return doc[col_order]
+
+    def _get_historical_document(self, date, verbose=False):
+        """Get historical document for a given date"""
+
+        year_to_document = {
+            2023: self.Document(
+                url="https://www.ercot.com/files/docs/2023/02/09/Native_Load_2023.zip",
+                publish_date=pd.Timestamp("2023-03-07", tz="US/Pacific"),
+            ),
+            2022: self.Document(
+                url="https://www.ercot.com/files/docs/2022/02/08/Native_Load_2022.zip",
+                publish_date=pd.Timestamp("2023-01-31", tz="US/Pacific"),
+            ),
+            2021: self.Document(
+                url="https://www.ercot.com/files/docs/2021/11/12/Native_Load_2021.zip",
+                publish_date=pd.Timestamp("2022-01-07", tz="US/Pacific"),
+            ),
+            2020: self.Document(
+                url="https://www.ercot.com/files/docs/2021/01/12/Native_Load_2020.zip",
+                publish_date=pd.Timestamp("2021-01-12", tz="US/Pacific"),
+            ),
+            2019: self.Document(
+                url="https://www.ercot.com/files/docs/2020/01/09/Native_Load_2019.zip",
+                publish_date=pd.Timestamp("2020-01-09", tz="US/Pacific"),
+            ),
+            2018: self.Document(
+                url="https://www.ercot.com/files/docs/2019/01/07/native_load_2018.zip",
+                publish_date=pd.Timestamp("2019-01-07", tz="US/Pacific"),
+            ),
+            2017: self.Document(
+                url="https://www.ercot.com/files/docs/2018/01/09/native_load_2017.zip",
+                publish_date=pd.Timestamp("2018-01-09", tz="US/Pacific"),
+            ),
+            2016: self.Document(
+                url="https://www.ercot.com/files/docs/2017/01/10/native_Load_2016.zip",
+                publish_date=pd.Timestamp("2017-01-10", tz="US/Pacific"),
+            ),
+            2015: self.Document(
+                url="https://www.ercot.com/files/docs/2016/01/07/native_load_2015.xls",
+                publish_date=pd.Timestamp("2016-01-07", tz="US/Pacific"),
+            ),
+            2014: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2014_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2013: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2013_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2012: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2012_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2011: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2011_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2010: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2010_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2009: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2009_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2008: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2008_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2007: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2007_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2006: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2006_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2005: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2005_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2004: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2004_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2003: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2003_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2002: self.Document(
+                url="https://www.ercot.com/files/docs/2015/10/22/2002_ercot_hourly_load_data.xls",
+                publish_date=pd.Timestamp("2015-10-22", tz="US/Pacific"),
+            ),
+            2000: self.Document(
+                url="https://www.ercot.com/files/docs/2005/11/10/2000ferc714.zip",
+                publish_date=pd.Timestamp("2005-11-10", tz="US/Pacific"),
+            ),
+            1999: self.Document(
+                url="https://www.ercot.com/files/docs/2002/12/11/1999ferc714.zip",
+                publish_date=pd.Timestamp("2002-12-11", tz="US/Pacific"),
+            ),
+            1998: self.Document(
+                url="https://www.ercot.com/files/docs/2002/12/11/ferc714.zip",
+                publish_date=pd.Timestamp("2004-07-26", tz="US/Pacific"),
+            ),
+            1997: self.Document(
+                url="https://www.ercot.com/files/docs/2002/12/11/97frc714.zip",
+                publish_date=pd.Timestamp("2002-12-11", tz="US/Pacific"),
+            ),
+            1996: self.Document(
+                url="https://www.ercot.com/files/docs/2004/07/26/96load.txt",
+                publish_date=pd.Timestamp("2004-07-26", tz="US/Pacific"),
+            ),
+            1995: self.Document(
+                url="https://www.ercot.com/files/docs/2004/07/26/erceei95.txt",
+                publish_date=pd.Timestamp("2004-07-26", tz="US/Pacific"),
+            ),
+        }
+        return year_to_document
 
     def _get_document(
         self,
@@ -958,14 +1098,52 @@ class Ercot(ISOBase):
         return df
 
     def read_doc(self, doc, verbose=False):
-        doc = pd.read_csv(doc.url, compression="zip")
-
+        filename = None
+        url = doc.url
+        if ".zip" in url:
+            r = requests.get(url, allow_redirects=True)
+            zip_stream = io.BytesIO(r.content)
+            with ZipFile(zip_stream, "r") as z:
+                filename = z.namelist()[0]
+                if filename.endswith(".xls") or filename.endswith(".xlsx"):
+                    doc = pd.read_excel(z.open(filename))
+                elif filename.endswith(".csv"):
+                    doc = pd.read_csv(z.open(filename))
+                elif filename.endswith(".txt"):
+                    doc = pd.read_table(z.open(filename), skiprows=14)
+                    doc = doc.reset_index(drop=False)
+                    doc.columns = [
+                        "MONTH",
+                        "DAY",
+                        "HOUR",
+                        "AENX",
+                        "AEPX",
+                        "CPST",
+                        "LCRA",
+                        "BPUB",
+                        "REIT",
+                        "STEC",
+                        "TMPP",
+                        "TNMP",
+                        "TUET",
+                        "TOTAL",
+                    ]
+                    doc["YEAR"] = 2000
+                    doc["HourEnding"] = pd.to_datetime(
+                        doc[["YEAR", "MONTH", "DAY", "HOUR"]],
+                    )
+                    doc.drop(columns=["MONTH", "DAY", "HOUR", "YEAR"], inplace=True)
+        elif ".xls" in url or ".xlsx" in url:
+            doc = pd.read_excel(url)
+        else:
+            doc = pd.read_csv(url, compression="zip")
         # files sometimes have different naming conventions
         # a more elegant solution would be nice
         doc.rename(
             columns={
                 "Delivery Date": "DeliveryDate",
                 "Hour Ending": "HourEnding",
+                "Hour_End": "HourEnding",
                 "Repeated Hour Flag": "DSTFlag",
                 "DeliveryHour": "HourEnding",
                 # fix whitespace in column name
@@ -973,7 +1151,6 @@ class Ercot(ISOBase):
             },
             inplace=True,
         )
-
         original_cols = doc.columns.tolist()
 
         # i think DeliveryInterval only shows up
@@ -985,8 +1162,7 @@ class Ercot(ISOBase):
                 + doc["HourEnding"].astype("timedelta64[h]")
                 + (doc["DeliveryInterval"] * interval_length)
             )
-
-        else:
+        elif "DeliveryDate" in original_cols:
             interval_length = pd.Timedelta(hours=1)
             doc["Interval End"] = pd.to_datetime(doc["DeliveryDate"]) + (
                 doc["HourEnding"].str.split(":").str[0].astype(int)
@@ -1003,12 +1179,41 @@ class Ercot(ISOBase):
                 ] + pd.DateOffset(
                     hours=1,
                 )  # noqa
+        else:
+            interval_length = pd.Timedelta(hours=1)
+            if "DSTFlag" not in original_cols:
+                doc["DSTFlag"] = doc["HourEnding"].apply(
+                    lambda x: "Y" if "DST" in str(x) else "N",
+                )
+                original_cols.append("DSTFlag")
+            if not is_datetime(doc["HourEnding"].dtype):
+                next_days = doc["HourEnding"].str[-5:] == "24:00"
+                doc.loc[next_days, "HourEnding"] = doc["HourEnding"].str[:-5] + "00:00"
+
+                doc["HourEnding"] = doc["HourEnding"].str.replace("DST", "")
+                doc["HourEnding"] = pd.to_datetime(doc["HourEnding"], format="mixed")
+                doc.loc[next_days, "HourEnding"] += pd.DateOffset(1)
+                doc["Interval End"] = doc["HourEnding"]
+            else:
+                doc["Interval End"] = doc["HourEnding"]
+
+            dst_skip_hour = doc[doc["Interval End"].diff() == pd.Timedelta(hours=2)]
+            for i in dst_skip_hour.index:
+                doc.loc[i - 1, "Interval End"] = doc.loc[
+                    i - 1,
+                    "Interval End",
+                ] + pd.DateOffset(
+                    hours=1,
+                )  # noqa
+            doc.rename(columns={"ERCOT": "Load"}, inplace=True)
+            if "ERCOT" in original_cols:
+                original_cols.remove("ERCOT")
+                original_cols.append("Load")
 
         doc["Interval End"] = doc["Interval End"].dt.tz_localize(
             self.default_timezone,
             ambiguous=doc["DSTFlag"] == "Y",
         )
-
         doc["Interval Start"] = doc["Interval End"] - interval_length
         doc["Time"] = doc["Interval Start"]
 
@@ -1017,17 +1222,11 @@ class Ercot(ISOBase):
             "Interval Start",
             "Interval End",
         ] + original_cols
-
         # todo try to clean up this logic
         doc = doc[cols_to_keep]
-        doc.drop(
-            columns=[
-                "DeliveryDate",
-                "HourEnding",
-                "DSTFlag",
-            ],
-            inplace=True,
-        )
+        for col in ["DeliveryDate", "HourEnding", "DSTFlag"]:
+            if col in doc.columns:
+                doc.drop(columns=[col], inplace=True)
         if "DeliveryInterval" in doc.columns:
             doc.drop(columns=["DeliveryInterval"], inplace=True)
 

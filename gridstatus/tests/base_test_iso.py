@@ -266,8 +266,8 @@ class BaseTestISO:
         assert time_cols == df.columns[: len(time_cols)].tolist()
         # check all time cols are localized timestamps
         for col in time_cols:
-            assert isinstance(df.loc[0][col], pd.Timestamp)
-            assert df.loc[0][col].tz is not None
+            assert isinstance(df.iloc[0][col], pd.Timestamp)
+            assert df.iloc[0][col].tz is not None
 
         self._check_ordered_by_time(df, ordered_by_col)
 
@@ -284,9 +284,10 @@ class BaseTestISO:
             raise ValueError("Unknown ISO ID")
         self._check_time_columns(df, instant_or_interval=time_type)
 
-    def _check_load(self, df):
+    def _check_load(self, df, load_col="Load"):
         assert isinstance(df, pd.DataFrame)
         assert df.shape[0] >= 0
+        assert load_col in df.columns
 
         if self.iso.iso_id in ["nyiso"]:
             time_type = "instant"

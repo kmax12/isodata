@@ -96,7 +96,7 @@ def make_availability_table():
 
 
 def _handle_date(date, tz=None):
-    if date == "today":
+    if date == ["today", "latest"]:
         date = pd.Timestamp.now(tz=tz).normalize()
 
     if not isinstance(date, pd.Timestamp):
@@ -289,3 +289,9 @@ def move_cols_to_front(df, cols_to_move):
     for c in cols_to_move:
         cols.remove(c)
     return df[cols_to_move + cols]
+
+
+def get_data_between_dates(df, start_date, end_date, col="Time"):
+    """Get DataFrame between start and end date"""
+    mask = (df[col].dt.date >= start_date.date()) & (df[col].dt.date <= end_date.date())
+    return df.loc[mask]
