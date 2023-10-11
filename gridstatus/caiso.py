@@ -888,7 +888,9 @@ class CAISO(ISOBase):
 
         # find index of OUTAGE MRID
         test_parse = pd.read_excel(
-            content, usecols="B:M", sheet_name="PREV_DAY_OUTAGES"
+            content,
+            usecols="B:M",
+            sheet_name="PREV_DAY_OUTAGES",
         )
         first_col = test_parse[test_parse.columns[0]]
         outage_mrid_index = first_col[first_col == "OUTAGE MRID"].index[0] + 1
@@ -947,7 +949,7 @@ class CAISO(ISOBase):
             ]
 
             assert not df.duplicated(
-                subset=["Outage MRID", "Curtailment Start Time"]
+                subset=["Outage MRID", "Curtailment Start Time"],
             ).any(), "There are still duplicates"
 
         return df
@@ -1180,7 +1182,7 @@ def _get_historical(file, date, verbose=False):
             msg = f"Fetching URL: {url}"
             log(msg, verbose)
 
-    df = pd.read_csv(url)
+    df = pd.read_csv(url, engine="pyarrow", dtype_backend="pyarrow")
 
     # sometimes there are extra rows at the end, so this lets us ignore them
     df = df.dropna(subset=["Time"])
@@ -1243,7 +1245,7 @@ def _get_oasis(config, start, end=None, raw_data=False, verbose=False, sleep=5):
     # parse and concat all files
     dfs = []
     for f in z.namelist():
-        df = pd.read_csv(z.open(f))
+        df = pd.read_csv(z.open(f), engine="pyarrow", dtype_backend="pyarrow")
         dfs.append(df)
 
     df = pd.concat(dfs)

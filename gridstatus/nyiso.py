@@ -529,7 +529,7 @@ class NYISO(ISOBase):
         msg = f"Requesting {url}"
         log(msg, verbose)
 
-        df = pd.read_csv(url)
+        df = pd.read_csv(url, engine="pyarrow", dtype_backend="pyarrow")
 
         # need to be updated once a year. approximately around end of april
         # find it here: https://www.nyiso.com/gold-book-resources
@@ -662,7 +662,7 @@ class NYISO(ISOBase):
         msg = f"Requesting {url}"
         log(msg, verbose)
 
-        df = pd.read_csv(url)
+        df = pd.read_csv(url, engine="pyarrow", dtype_backend="pyarrow")
 
         return df
 
@@ -734,7 +734,7 @@ class NYISO(ISOBase):
             msg = f"Requesting {csv_url}"
             log(msg, verbose)
 
-            df = pd.read_csv(csv_url)
+            df = pd.read_csv(csv_url, engine="pyarrow", dtype_backend="pyarrow")
             df = _handle_time(df, dataset_name)
             df["File Date"] = date.normalize()
         else:
@@ -769,7 +769,9 @@ class NYISO(ISOBase):
                     msg = f"{csv_filename} not found in {zip_url}"
                     log(msg, verbose)
                     continue
-                df = pd.read_csv(z.open(csv_filename))
+                df = pd.read_csv(
+                    z.open(csv_filename), engine="pyarrow", dtype_backend="pyarrow"
+                )
                 df["File Date"] = d.normalize()
 
                 df = _handle_time(df, dataset_name)
